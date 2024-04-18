@@ -51,13 +51,14 @@ std::vector<torch::Tensor> BatchPrefillWithPagedKVCachePyTorchWrapper::Forward(
     torch::Tensor paged_kv_indptr, torch::Tensor paged_kv_indices,
     torch::Tensor paged_kv_last_page_len, bool causal, unsigned int pos_encoding_mode,
     bool allow_fp16_qk_reduction, float sm_scale, float rope_scale, float rope_theta,
-    bool return_lse) {
+    bool return_lse, torch::Tensor mask) {
   CHECK_INPUT(q);
   CHECK_INPUT(qo_indptr);
   CHECK_INPUT(paged_kv_data);
   CHECK_INPUT(paged_kv_indptr);
   CHECK_INPUT(paged_kv_indices);
   CHECK_INPUT(paged_kv_last_page_len);
+  CHECK_INPUT(mask);
   CHECK_DIM(3, q);          // (nnz_qo, H_qo, D)
   CHECK_DIM(1, qo_indptr);  // (B + 1,)
   // [max_num_pages, 2, num_kv_heads, page_size, head_dim] for HND
@@ -66,6 +67,7 @@ std::vector<torch::Tensor> BatchPrefillWithPagedKVCachePyTorchWrapper::Forward(
   CHECK_DIM(1, paged_kv_indptr);         // (B + 1,)
   CHECK_DIM(1, paged_kv_indices);        // (nnz_kv,)
   CHECK_DIM(1, paged_kv_last_page_len);  // (B,)
+  CHECK_DIM(2, mask);                    // (K,K)
   int64_t batch_size = qo_indptr.size(0) - 1;
   int64_t nnz_qo = q.size(0);
   int64_t num_qo_heads = q.size(1);
@@ -89,6 +91,7 @@ std::vector<torch::Tensor> BatchPrefillWithPagedKVCachePyTorchWrapper::Forward(
   CHECK_EQ(paged_kv_indptr.scalar_type(), torch::kInt32);
   CHECK_EQ(paged_kv_indices.scalar_type(), torch::kInt32);
   CHECK_EQ(paged_kv_last_page_len.scalar_type(), torch::kInt32);
+  CHECK_EQ(mask.size(0), mask.size(1));
 
   cudaStream_t torch_current_stream = c10::cuda::getCurrentCUDAStream();
   torch::Tensor o = torch::empty_like(q, q.options());
@@ -121,6 +124,8 @@ std::vector<torch::Tensor> BatchPrefillWithPagedKVCachePyTorchWrapper::Forward(
                             /*q_offset=*/nullptr, paged_kv, static_cast<c_type*>(o.data_ptr()),
                             /*lse=*/return_lse ? static_cast<float*>(lse.data_ptr()) : nullptr,
                             sm_scale, rope_scale, rope_theta,
+                            /*mask*/mask.size(0) == 0 ? nullptr : static_cast<int8_t *>(mask.data_ptr()),
+                            /*num_masks*/mask.size(0),
                             /*stream=*/torch_current_stream);
                         TORCH_CHECK(status == cudaSuccess,
                                     "BatchPrefillWithPagedKVCache failed with error code ",
@@ -171,17 +176,19 @@ std::vector<torch::Tensor> BatchPrefillWithRaggedKVCachePyTorchWrapper::Forward(
     torch::Tensor q, torch::Tensor qo_indptr, torch::Tensor k, torch::Tensor v,
     torch::Tensor kv_indptr, bool causal, unsigned int pos_encoding_mode,
     bool allow_fp16_qk_reduction, float sm_scale, float rope_scale, float rope_theta,
-    bool return_lse) {
+    bool return_lse, torch::Tensor mask) {
   CHECK_INPUT(q);
   CHECK_INPUT(qo_indptr);
   CHECK_INPUT(k);
   CHECK_INPUT(v);
   CHECK_INPUT(kv_indptr);
+  CHECK_INPUT(mask);
   CHECK_DIM(3, q);          // (nnz_qo, H_qo, D)
   CHECK_DIM(1, qo_indptr);  // (B + 1,)
   CHECK_DIM(3, k);          // (nnz_kv, H_kv, D) if NHD else (H_kv, nnz_kv, D)
   CHECK_DIM(3, v);          // (nnz_kv, H_kv, D) if NHD else (H_kv, nnz_kv, D)
   CHECK_DIM(1, kv_indptr);  // (B + 1,)
+  CHECK_DIM(2, mask);       // (K,K)
   int64_t batch_size = qo_indptr.size(0) - 1;
   int64_t nnz_qo = q.size(0);
   int64_t num_qo_heads = q.size(1);
@@ -192,6 +199,7 @@ std::vector<torch::Tensor> BatchPrefillWithRaggedKVCachePyTorchWrapper::Forward(
   CHECK_EQ(k.size(1), v.size(1));
   CHECK_EQ(k.size(2), v.size(2));
   CHECK_EQ(k.size(2), head_dim);
+  CHECK_EQ(mask.size(0), mask.size(1));
   CHECK_GQA_HEAD_DIVISIBLE(num_qo_heads, num_kv_heads);
   // TODO(Zihao): support dispatching to different index data types.
   CHECK_EQ(qo_indptr.scalar_type(), torch::kInt32);
@@ -224,6 +232,8 @@ std::vector<torch::Tensor> BatchPrefillWithRaggedKVCachePyTorchWrapper::Forward(
                             static_cast<c_type*>(o.data_ptr()),
                             /*lse=*/return_lse ? static_cast<float*>(lse.data_ptr()) : nullptr,
                             batch_size, num_kv_heads, sm_scale, rope_scale, rope_theta,
+                            /*mask*/mask.size(0) == 0 ? nullptr : static_cast<int8_t *>(mask.data_ptr()),
+                            /*num_masks*/mask.size(0),
                             /*stream=*/torch_current_stream);
                         TORCH_CHECK(status == cudaSuccess,
                                     "BatchPrefillWithRaggedKVCache failed with error ",

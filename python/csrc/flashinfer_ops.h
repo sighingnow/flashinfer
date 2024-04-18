@@ -32,7 +32,7 @@ torch::Tensor single_decode_with_kv_cache(torch::Tensor q, torch::Tensor k, torc
 std::vector<torch::Tensor> single_prefill_with_kv_cache(
     torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor tmp, bool causal,
     unsigned int layout, unsigned int pos_encoding_mode, bool allow_fp16_qk_reduction,
-    float sm_scale, float rope_scale, float rope_theta, bool return_lse);
+    float sm_scale, float rope_scale, float rope_theta, bool return_lse, torch::Tensor mask);
 
 void append_paged_kv_cache(torch::Tensor append_key, torch::Tensor append_value,
                            torch::Tensor append_indptr, torch::Tensor kv_data,
@@ -90,7 +90,7 @@ class BatchPrefillWithPagedKVCachePyTorchWrapper {
                                      torch::Tensor paged_kv_last_page_len, bool causal,
                                      unsigned int pos_encoding_mode, bool allow_fp16_qk_reduction,
                                      float sm_scale, float rope_scale, float rope_theta,
-                                     bool return_lse);
+                                     bool return_lse, torch::Tensor mask);
 
  private:
   BatchPrefillWithPagedKVCachePyTorchWrapper(unsigned int layout)
@@ -112,7 +112,7 @@ class BatchPrefillWithRaggedKVCachePyTorchWrapper {
                                      torch::Tensor v, torch::Tensor kv_indptr, bool causal,
                                      unsigned int pos_encoding_mode, bool allow_fp16_qk_reduction,
                                      float sm_scale, float rope_scale, float rope_theta,
-                                     bool return_lse);
+                                     bool return_lse, torch::Tensor mask);
 
  private:
   BatchPrefillWithRaggedKVCachePyTorchWrapper(unsigned int layout)

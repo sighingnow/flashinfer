@@ -35,7 +35,7 @@ cudaError_t SinglePrefillWithKVCacheDispatched(DTypeIn* q, DTypeIn* k, DTypeIn* 
                                                float* tmp, float* lse, uint32_t num_kv_heads,
                                                uint32_t qo_len, uint32_t kv_len, float sm_scale,
                                                float rope_scale, float rope_theta,
-                                               cudaStream_t stream);
+                                               int8_t* mask, uint32_t num_masks, cudaStream_t stream);
 
 template <typename DTypeIn, typename DTypeOut>
 cudaError_t SinglePrefillWithKVCache(DTypeIn* q, DTypeIn* k, DTypeIn* v, DTypeOut* o, float* tmp,
@@ -46,7 +46,7 @@ cudaError_t SinglePrefillWithKVCache(DTypeIn* q, DTypeIn* k, DTypeIn* v, DTypeOu
                                      bool allow_fp16_qk_reduction = false,
                                      std::optional<float> maybe_sm_scale = std::nullopt,
                                      float rope_scale = 1.f, float rope_theta = 1e4,
-                                     cudaStream_t stream = nullptr) {
+                                     int8_t* mask = nullptr, uint32_t num_masks = 0, cudaStream_t stream = nullptr) {
   const uint32_t group_size = num_qo_heads / num_kv_heads;
   const float sm_scale = maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
   DISPATCH_ALLOW_FP16_QK_REDUCTION(
@@ -63,7 +63,7 @@ cudaError_t SinglePrefillWithKVCache(DTypeIn* q, DTypeIn* k, DTypeIn* v, DTypeOu
                             GROUP_SIZE, HEAD_DIM, KV_LAYOUT, pos_encoding_mode,
                             ALLOW_FP16_QK_REDUCTION, CAUSAL, DTypeIn, DTypeOut>(
                             q, k, v, o, tmp, lse, num_kv_heads, qo_len, kv_len, sm_scale,
-                            rope_scale, rope_theta, stream);
+                            rope_scale, rope_theta, mask, num_masks, stream);
                       })})})})})});
   return cudaSuccess;
 }
@@ -75,7 +75,7 @@ cudaError_t BatchPrefillWithRaggedKVCacheDispatched(
     DTypeIn* q, IdType* request_indices, IdType* tile_indices, IdType* qo_indptr, DTypeIn* k,
     DTypeIn* v, IdType* kv_indptr, IdType* q_offset, IdType* k_rope_pos_offset, DTypeOut* o,
     float* tmp, float* lse, uint32_t batch_size, uint32_t num_qo_tiles, uint32_t num_kv_heads,
-    float sm_scale, float rope_scale, float rope_theta, cudaStream_t stream = nullptr);
+    float sm_scale, float rope_scale, float rope_theta, int8_t* mask, uint32_t num_masks, cudaStream_t stream = nullptr);
 
 template <PageStorage page_storage, QKVLayout kv_layout, uint32_t num_frags_x, uint32_t PAGE_SIZE,
           uint32_t GROUP_SIZE, uint32_t HEAD_DIM, PosEncodingMode pos_encoding_mode,
@@ -85,7 +85,7 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(
     DTypeIn* q, IdType* request_indices, IdType* tile_indices, IdType* qo_indptr, IdType* q_offset,
     paged_kv_t<page_storage, kv_layout, DTypeIn, IdType> paged_kv, DTypeOut* o, float* tmp,
     float* lse, uint32_t num_qo_tiles, float sm_scale, float rope_scale, float rope_theta,
-    cudaStream_t stream);
+    int8_t* mask, uint32_t num_masks, cudaStream_t stream);
 
 template <PageStorage page_storage, QKVLayout kv_layout, uint32_t GROUP_SIZE, uint32_t HEAD_DIM,
           PosEncodingMode pos_encoding_mode, bool ALLOW_FP16_QK_REDUCTION, bool CAUSAL,
@@ -93,7 +93,7 @@ template <PageStorage page_storage, QKVLayout kv_layout, uint32_t GROUP_SIZE, ui
 cudaError_t BatchPrefillWithPagedKVCacheWrapperDispatched(
     BatchPrefillHandler* handler, DTypeIn* q, IdType* qo_indptr, IdType* q_offset,
     paged_kv_t<page_storage, kv_layout, DTypeIn, IdType> paged_kv, DTypeOut* o, float* lse,
-    float sm_scale, float rope_scale, float rope_theta, cudaStream_t stream) {
+    float sm_scale, float rope_scale, float rope_theta, int8_t* mask, uint32_t num_masks, cudaStream_t stream) {
   float* tmp = nullptr;
   IdType* request_indices = nullptr;
   IdType* tile_indices = nullptr;
@@ -117,7 +117,7 @@ cudaError_t BatchPrefillWithPagedKVCacheWrapperDispatched(
             page_storage, kv_layout, NUM_FRAGS_X, PAGE_SIZE, GROUP_SIZE, HEAD_DIM,
             pos_encoding_mode, ALLOW_FP16_QK_REDUCTION, CAUSAL, DTypeIn, DTypeOut, IdType>(
             q, request_indices, tile_indices, qo_indptr, q_offset, paged_kv, o, tmp, lse,
-            num_qo_tiles, sm_scale, rope_scale, rope_theta, stream);
+            num_qo_tiles, sm_scale, rope_scale, rope_theta, mask, num_masks, stream);
       })});
   return cudaSuccess;
 }
@@ -130,7 +130,8 @@ cudaError_t BatchPrefillWithPagedKVCacheWrapper(
     uint32_t num_qo_heads, bool causal = true,
     PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
     bool allow_fp16_qk_reduction = false, std::optional<float> maybe_sm_scale = std::nullopt,
-    float rope_scale = 1.f, float rope_theta = 1e4, cudaStream_t stream = nullptr) {
+    float rope_scale = 1.f, float rope_theta = 1e4, int8_t* mask = nullptr,
+    uint32_t num_masks = 0, cudaStream_t stream = nullptr) {
   const float sm_scale = maybe_sm_scale.value_or(1.f / std::sqrt(float(paged_kv.head_dim)));
   const uint32_t num_kv_heads = paged_kv.num_heads;
   const uint32_t head_dim = paged_kv.head_dim;
@@ -148,7 +149,7 @@ cudaError_t BatchPrefillWithPagedKVCacheWrapper(
                             page_storage, kv_layout, GROUP_SIZE, HEAD_DIM, pos_encoding_mode,
                             ALLOW_FP16_QK_REDUCTION, CAUSAL, DTypeIn, DTypeOut, IdType>(
                             handler, q, qo_indptr, q_offset, paged_kv, o, lse, sm_scale, rope_scale,
-                            rope_theta, stream);
+                            rope_theta, mask, num_masks, stream);
                       })})})})});
   return cudaSuccess;
 }
@@ -160,7 +161,7 @@ cudaError_t BatchPrefillWithRaggedKVCacheWrapperDispatched(
     BatchPrefillHandler* handler, DTypeIn* q, IdType* qo_indptr, DTypeIn* k, DTypeIn* v,
     IdType* kv_indptr, IdType* q_offset, IdType* k_rope_pos_offset, DTypeOut* o, float* lse,
     uint32_t batch_size, uint32_t num_kv_heads, float sm_scale, float rope_scale, float rope_theta,
-    cudaStream_t stream) {
+    int8_t* mask, uint32_t num_masks, cudaStream_t stream) {
   float* tmp = nullptr;
   IdType* request_indices = nullptr;
   IdType* tile_indices = nullptr;
@@ -184,7 +185,7 @@ cudaError_t BatchPrefillWithRaggedKVCacheWrapperDispatched(
                                                    CAUSAL, DTypeIn, DTypeOut, IdType>(
         q, request_indices, tile_indices, qo_indptr, k, v, kv_indptr, q_offset, k_rope_pos_offset,
         o, tmp, lse, batch_size, num_qo_tiles, num_kv_heads, sm_scale, rope_scale, rope_theta,
-        stream);
+        mask, num_masks, stream);
   });
   return cudaSuccess;
 }
@@ -197,7 +198,8 @@ cudaError_t BatchPrefillWithRaggedKVCacheWrapper(
     const uint32_t head_dim, bool causal = true, QKVLayout kv_layout = QKVLayout::kNHD,
     PosEncodingMode pos_encoding_mode = PosEncodingMode::kNone,
     bool allow_fp16_qk_reduction = false, std::optional<float> maybe_sm_scale = std::nullopt,
-    const float rope_scale = 1.f, const float rope_theta = 1e4, cudaStream_t stream = nullptr) {
+    const float rope_scale = 1.f, const float rope_theta = 1e4, int8_t* mask = nullptr,
+    uint32_t num_masks = 0, cudaStream_t stream = nullptr) {
   const float sm_scale = maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
   DISPATCH_LAYOUT(
       kv_layout, KV_LAYOUT,
@@ -216,7 +218,7 @@ cudaError_t BatchPrefillWithRaggedKVCacheWrapper(
                                 ALLOW_FP16_QK_REDUCTION, CAUSAL, DTypeIn, DTypeOut, IdType>(
                                 handler, q, qo_indptr, k, v, kv_indptr, q_offset, k_rope_pos_offset,
                                 o, lse, batch_size, num_kv_heads, sm_scale, rope_scale, rope_theta,
-                                stream);
+                                mask, num_masks, stream);
                           })})})})})});
   return cudaSuccess;
 }

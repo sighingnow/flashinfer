@@ -552,7 +552,11 @@ template <bool partition_kv, bool causal, uint32_t group_size, uint32_t num_warp
 __device__ __forceinline__ void mask_s(const uint32_t qo_idx_base, const uint32_t kv_idx_base,
                                        const uint32_t qo_len, const uint32_t kv_len,
                                        const uint32_t chunk_end,
-                                       DTypeQKAccum (*s_frag)[num_frags_z][8]) {
+                                       DTypeQKAccum (*s_frag)[num_frags_z][8],
+                                       const int8_t *mask = nullptr,
+                                       const uint32_t num_masks = 0) {
+  const int32_t context_len = static_cast<int32_t>(kv_len) - static_cast<int32_t>(qo_len);
+  const int32_t mask_context_len = static_cast<int32_t>(kv_len) - static_cast<int32_t>(num_masks);
   const uint32_t tx = threadIdx.x;
 #pragma unroll
   for (uint32_t fx = 0; fx < num_frags_x; ++fx) {
@@ -564,8 +568,15 @@ __device__ __forceinline__ void mask_s(const uint32_t qo_idx_base, const uint32_
                            qo_idx_base + (fx * 16 + tx / 4 + 8 * ((reg_id % 4) / 2)) / group_size,
                        kv_idx =
                            kv_idx_base + fz * 16 + 2 * (tx % 4) + 8 * (reg_id / 4) + reg_id % 2;
+        // n.b.: use int32_t as it might be negative numbers
+        const int32_t q_offset = static_cast<int32_t>(q_idx) + context_len - mask_context_len;
+        const int32_t kv_offset = static_cast<int32_t>(kv_idx) - mask_context_len;
         const bool out_of_boundary =
-            (causal ? (kv_idx > kv_len + q_idx - qo_len || (partition_kv && kv_idx >= chunk_end))
+            (causal ? (
+              (kv_idx > kv_len + q_idx - qo_len) ||
+              (mask && kv_offset >= 0 && kv_offset < num_masks && q_offset >= 0 && q_offset < num_masks &&
+               mask[q_offset * num_masks + kv_offset] == 0) ||
+              (partition_kv && kv_idx >= chunk_end))
                     : kv_idx >= chunk_end);
         s_frag[fx][fz][reg_id] = out_of_boundary ? DTypeQKAccum(-5e4) : s_frag[fx][fz][reg_id];
       }
@@ -894,7 +905,8 @@ __global__ void SinglePrefillWithKVCacheKernel(
     DTypeIn* __restrict__ q, DTypeIn* __restrict__ k, DTypeIn* __restrict__ v,
     DTypeOut* __restrict__ o, void* __restrict__ tmp, float* __restrict__ lse,
     const tensor_info_t<kv_layout, group_size, num_frags_y * 16> qkv_info, float sm_scale,
-    const float log2_rope_rcp_scale, const float log2_rope_rcp_theta) {
+    const float log2_rope_rcp_scale, const float log2_rope_rcp_theta,
+    const int8_t* mask, uint32_t num_masks) {
   static_assert(sizeof(DTypeIn) == 2);
   static_assert(sizeof(DTypeOut) == 2);
   sm_scale *= math::log2e;
@@ -1031,7 +1043,8 @@ __global__ void SinglePrefillWithKVCacheKernel(
     // apply mask
     if (iter >= mask_iteration) {
       mask_s<partition_kv, causal, group_size, num_warps, num_frags_x, num_frags_y, num_frags_z>(
-          qo_idx_base, chunk_start + iter * 16 * num_frags_z, qo_len, kv_len, chunk_end, s_frag);
+          qo_idx_base, chunk_start + iter * 16 * num_frags_z, qo_len, kv_len, chunk_end, s_frag,
+          mask, num_masks);
     }
 
     // compute m,d states in online softmax
@@ -1100,7 +1113,7 @@ __global__ void BatchPrefillWithRaggedKVCacheKernel(
     DTypeIn* __restrict__ v, IdType* __restrict__ kv_indptr, IdType* __restrict__ q_offset,
     IdType* __restrict__ k_rope_pos_offset, DTypeOut* __restrict__ o, float* __restrict__ tmp,
     float* __restrict__ lse, uint32_t batch_size, float sm_scale, float log2_rope_rcp_scale,
-    float log2_rope_rcp_theta) {
+    float log2_rope_rcp_theta, int8_t* mask, uint32_t num_masks) {
   static_assert(sizeof(DTypeIn) == 2);
   static_assert(sizeof(DTypeOut) == 2);
   sm_scale *= math::log2e;
@@ -1247,7 +1260,7 @@ __global__ void BatchPrefillWithRaggedKVCacheKernel(
     // apply mask
     if (iter >= mask_iteration) {
       mask_s<partition_kv, causal, group_size, num_warps, num_frags_x, num_frags_y, num_frags_z>(
-          qo_idx_base, iter * 16 * num_frags_z, qo_len, kv_len, kv_len, s_frag);
+          qo_idx_base, iter * 16 * num_frags_z, qo_len, kv_len, kv_len, s_frag, mask, num_masks);
     }
 
     // compute m,d states in online softmax
@@ -1307,7 +1320,7 @@ __global__ void BatchPrefillWithPagedKVCacheKernel(
     DTypeIn* __restrict__ q, paged_kv_t<page_storage, kv_layout, DTypeIn, IdType> paged_kv,
     IdType* __restrict__ qo_indptr, IdType* __restrict__ q_offset, DTypeOut* __restrict__ o,
     float* __restrict__ tmp, float* __restrict__ lse, float sm_scale, float log2_rope_rcp_scale,
-    float log2_rope_rcp_theta) {
+    float log2_rope_rcp_theta, int8_t* mask, uint32_t num_masks) {
   static_assert(sizeof(DTypeIn) == 2);
   static_assert(sizeof(DTypeOut) == 2);
   sm_scale *= math::log2e;
@@ -1446,7 +1459,7 @@ __global__ void BatchPrefillWithPagedKVCacheKernel(
     // apply mask
     if (iter >= mask_iteration) {
       mask_s<partition_kv, causal, group_size, num_warps, num_frags_x, num_frags_y, num_frags_z>(
-          qo_idx_base, iter * 16 * num_frags_z, qo_len, kv_len, kv_len, s_frag);
+          qo_idx_base, iter * 16 * num_frags_z, qo_len, kv_len, kv_len, s_frag, mask, num_masks);
     }
 
     // compute m,d states in online softmax
@@ -1651,7 +1664,7 @@ cudaError_t SinglePrefillWithKVCacheDispatched(DTypeIn* q, DTypeIn* k, DTypeIn* 
                                                float* tmp, float* lse, uint32_t num_kv_heads,
                                                uint32_t qo_len, uint32_t kv_len, float sm_scale,
                                                float rope_scale, float rope_theta,
-                                               cudaStream_t stream) {
+                                               int8_t* mask, uint32_t num_masks, cudaStream_t stream) {
   const float log2_rope_rcp_scale = -std::log2f(rope_scale);
   const float log2_rope_rcp_theta = -std::log2f(rope_theta);
   if (kv_len < qo_len && CAUSAL) {
@@ -1740,7 +1753,9 @@ cudaError_t SinglePrefillWithKVCacheDispatched(DTypeIn* q, DTypeIn* k, DTypeIn* 
                           (void*)&qkv_info,
                           (void*)&sm_scale,
                           (void*)&log2_rope_rcp_scale,
-                          (void*)&log2_rope_rcp_theta};
+                          (void*)&log2_rope_rcp_theta,
+                          (void*)&mask,
+                          (void*)&num_masks};
           dim3 nblks(ceil_div(qo_len * GROUP_SIZE, num_rows_per_cta), 1, num_kv_heads);
           dim3 nthrs(32, num_warps);
           FLASHINFER_CUDA_CALL(
@@ -1758,7 +1773,9 @@ cudaError_t SinglePrefillWithKVCacheDispatched(DTypeIn* q, DTypeIn* k, DTypeIn* 
                           (void*)&qkv_info,
                           (void*)&sm_scale,
                           (void*)&log2_rope_rcp_scale,
-                          (void*)&log2_rope_rcp_theta};
+                          (void*)&log2_rope_rcp_theta,
+                          (void*)&mask,
+                          (void*)&num_masks};
           dim3 nblks(ceil_div(qo_len * GROUP_SIZE, num_rows_per_cta), num_chunks, num_kv_heads);
           dim3 nthrs(32, num_warps);
           FLASHINFER_CUDA_CALL(
@@ -1808,7 +1825,7 @@ cudaError_t SinglePrefillWithKVCache(DTypeIn* q, DTypeIn* k, DTypeIn* v, DTypeOu
                                      bool allow_fp16_qk_reduction = false,
                                      std::optional<float> maybe_sm_scale = std::nullopt,
                                      float rope_scale = 1.f, float rope_theta = 1e4,
-                                     cudaStream_t stream = nullptr) {
+                                     int8_t* mask = nullptr, uint32_t num_masks = 0, cudaStream_t stream = nullptr) {
   const uint32_t group_size = num_qo_heads / num_kv_heads;
   const float sm_scale = maybe_sm_scale.value_or(1.f / std::sqrt(float(head_dim)));
   DISPATCH_ALLOW_FP16_QK_REDUCTION(
@@ -1825,7 +1842,7 @@ cudaError_t SinglePrefillWithKVCache(DTypeIn* q, DTypeIn* k, DTypeIn* v, DTypeOu
                                                            pos_encoding_mode,
                                                            ALLOW_FP16_QK_REDUCTION, CAUSAL>(
                             q, k, v, o, tmp, lse, num_kv_heads, qo_len, kv_len, sm_scale,
-                            rope_scale, rope_theta, stream);
+                            rope_scale, rope_theta, mask, num_masks, stream);
                       })})})})})});
   return cudaSuccess;
 }
@@ -1838,7 +1855,7 @@ cudaError_t BatchPrefillWithRaggedKVCacheDispatched(
     DTypeIn* v, IdType* kv_indptr, IdType* q_offset, IdType* k_rope_pos_offset, DTypeOut* o,
     float* tmp, float* lse, const uint32_t batch_size, const uint32_t num_qo_tiles,
     const uint32_t num_kv_heads, const float sm_scale, const float rope_scale,
-    const float rope_theta, cudaStream_t stream = nullptr) {
+    const float rope_theta, int8_t* mask, uint32_t num_masks, cudaStream_t stream = nullptr) {
   const float log2_rope_rcp_scale = -std::log2f(rope_scale);
   const float log2_rope_rcp_theta = -std::log2f(rope_theta);
   constexpr uint32_t num_warps = 4;
@@ -1901,7 +1918,9 @@ cudaError_t BatchPrefillWithRaggedKVCacheDispatched(
                       (void*)&batch_size,
                       (void*)&sm_scale,
                       (void*)&log2_rope_rcp_scale,
-                      (void*)&log2_rope_rcp_theta};
+                      (void*)&log2_rope_rcp_theta,
+                      (void*)&mask,
+                      (void*)&num_masks};
       FLASHINFER_CUDA_CALL(cudaLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     }
   });
@@ -1916,7 +1935,7 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(
     DTypeIn* q, IdType* request_indices, IdType* tile_indices, IdType* qo_indptr, IdType* q_offset,
     paged_kv_t<page_storage, kv_layout, DTypeIn, IdType> paged_kv, DTypeOut* o, float* tmp,
     float* lse, uint32_t num_qo_tiles, float sm_scale, float rope_scale, float rope_theta,
-    cudaStream_t stream) {
+    int8_t* mask, uint32_t num_masks, cudaStream_t stream) {
   const float log2_rope_rcp_scale = -std::log2f(rope_scale);
   const float log2_rope_rcp_theta = -std::log2f(rope_theta);
   constexpr uint32_t num_warps = 4;
@@ -1977,7 +1996,9 @@ cudaError_t BatchPrefillWithPagedKVCacheDispatched(
                       (void*)&lse,
                       (void*)&sm_scale,
                       (void*)&log2_rope_rcp_scale,
-                      (void*)&log2_rope_rcp_theta};
+                      (void*)&log2_rope_rcp_theta,
+                      (void*)&mask,
+                      (void*)&num_masks};
       FLASHINFER_CUDA_CALL(cudaLaunchKernel((void*)kernel, nblks, nthrs, args, smem_size, stream));
     }
   });

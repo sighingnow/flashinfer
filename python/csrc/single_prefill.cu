@@ -23,15 +23,18 @@ using namespace flashinfer;
 std::vector<torch::Tensor> single_prefill_with_kv_cache(
     torch::Tensor q, torch::Tensor k, torch::Tensor v, torch::Tensor tmp, bool causal,
     unsigned int layout, unsigned int pos_encoding_mode, bool allow_fp16_qk_reduction,
-    float sm_scale, float rope_scale, float rope_theta, bool return_lse) {
+    float sm_scale, float rope_scale, float rope_theta, bool return_lse, torch::Tensor mask) {
   CHECK_INPUT(q);
   CHECK_INPUT(k);
   CHECK_INPUT(v);
+  CHECK_INPUT(mask);
   CHECK_DIM(3, q);
   CHECK_DIM(3, k);
   CHECK_DIM(3, v);
+  CHECK_DIM(2, mask); // (K,K)
   CHECK_SHAPE(k, v);
   CHECK_EQ(q.size(2), k.size(2));
+  CHECK_EQ(mask.size(0), mask.size(1));
   unsigned int head_dim = q.size(2);
   unsigned int kv_len, qo_len, num_kv_heads, num_qo_heads;
   QKVLayout kv_layout = static_cast<QKVLayout>(layout);
@@ -71,6 +74,8 @@ std::vector<torch::Tensor> single_prefill_with_kv_cache(
                             static_cast<float*>(tmp.data_ptr()),
                             /*lse=*/return_lse ? static_cast<float*>(lse.data_ptr()) : nullptr,
                             num_kv_heads, qo_len, kv_len, sm_scale, rope_scale, rope_theta,
+                            /*mask*/mask.size(0) == 0 ? nullptr : static_cast<int8_t *>(mask.data_ptr()),
+                            /*num_masks*/mask.size(0),
                             torch_current_stream);
                         TORCH_CHECK(status == cudaSuccess,
                                     "SinglePrefillWithKVCache kernel launch failed, error: " +

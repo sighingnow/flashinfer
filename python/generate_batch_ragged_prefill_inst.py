@@ -45,7 +45,7 @@ def get_cu_file_str(
     {dtype_out}* o, float* tmp, float* lse,
     uint32_t batch_size, uint32_t num_qo_tiles, uint32_t num_kv_heads,
     float sm_scale, float rope_scale,
-    float rope_theta, cudaStream_t stream);
+    float rope_theta, int8_t* mask, uint32_t num_masks, cudaStream_t stream);
         """.format(
                 num_frags_x=num_frags_x,
                 kv_layout=kv_layout_literal[int(kv_layout)],

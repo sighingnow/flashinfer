@@ -64,6 +64,7 @@ def single_prefill_with_kv_cache(
     sm_scale: Optional[float] = None,
     rope_scale: Optional[float] = None,
     rope_theta: Optional[float] = None,
+    mask: Optional[torch.Tensor] = None,
 ):
     r"""Prefill/Append attention with KV cache for single request, return the attention
     output.
@@ -96,6 +97,8 @@ def single_prefill_with_kv_cache(
         The scale used in RoPE interpolation, if not provided, will be set to 1.0.
     rope_theta : Optional[float]
         The theta used in RoPE, if not provided, will be set to 1e4.
+    mask : Optional[torch.Tensor]
+        The mask tensor for last k query tokens, shape: ``[k, k]``, dtype is ``torch.int8``.
 
     Returns
     -------
@@ -135,6 +138,8 @@ def single_prefill_with_kv_cache(
         rope_scale = 1.0
     if rope_theta is None:
         rope_theta = 1e4
+    if mask is None:
+        mask = torch.empty((0, 0), dtype=torch.int8, device=q.device)
     return _kernels.single_prefill_with_kv_cache(
         q,
         k,
@@ -148,6 +153,7 @@ def single_prefill_with_kv_cache(
         rope_scale,
         rope_theta,
         False,
+        mask,
     )[0]
 
 
@@ -162,6 +168,7 @@ def single_prefill_with_kv_cache_return_lse(
     sm_scale: Optional[float] = None,
     rope_scale: Optional[float] = None,
     rope_theta: Optional[float] = None,
+    mask: Optional[torch.Tensor] = None,
 ):
     r"""Prefill/Append attention with KV cache for single request, return attention
     output and logsumexp of attention scores.
@@ -194,6 +201,8 @@ def single_prefill_with_kv_cache_return_lse(
         The scale used in RoPE interpolation, if not provided, will be set to ``1.0``.
     rope_theta : Optional[float]
         The theta used in RoPE, if not provided, will be set to ``1e4``.
+    mask : Optional[torch.Tensor]
+        The mask tensor for last k query tokens, shape: ``[k, k]``, dtype is ``torch.int8``.
 
     Returns
     -------
@@ -241,6 +250,8 @@ def single_prefill_with_kv_cache_return_lse(
         rope_scale = 1.0
     if rope_theta is None:
         rope_theta = 1e4
+    if mask is None:
+        mask = torch.empty((0, 0), dtype=torch.int8, device=q.device)
     if is_float8(q):
         logging.warning(
             "Our current prefill kernel implementation needs f16 input, the f8 inputs "
@@ -262,6 +273,7 @@ def single_prefill_with_kv_cache_return_lse(
         rope_scale,
         rope_theta,
         True,
+        mask,
     )
 
 
@@ -444,6 +456,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         sm_scale: Optional[float] = None,
         rope_scale: Optional[float] = None,
         rope_theta: Optional[float] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
         r"""Compute batch prefill/append attention between query and paged kv-cache.
 
@@ -473,6 +486,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             ``1.0``.
         rope_theta : Optional[float]
             The theta used in RoPE, if not provided, will be set to ``1e4``.
+        mask : Optional[torch.Tensor]
+            The mask tensor for last k query tokens, shape: ``[k, k]``, dtype is ``torch.int8``.
 
         Returns
         -------
@@ -486,6 +501,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             rope_scale = 1.0
         if rope_theta is None:
             rope_theta = 1e4
+        if mask is None:
+            mask = torch.empty((0, 0), dtype=torch.int8, device=q.device)
         if is_float8(q):
             logging.warning(
                 "Our current prefill kernel implementation needs f16 input, the f8 inputs "
@@ -509,6 +526,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             rope_scale,
             rope_theta,
             False,
+            mask,
         )[0]
 
     def forward_return_lse(
@@ -521,6 +539,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
         sm_scale: Optional[float] = None,
         rope_scale: Optional[float] = None,
         rope_theta: Optional[float] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
         r"""Compute batch prefill/append attention paged kv-cache.
 
@@ -566,6 +585,8 @@ class BatchPrefillWithPagedKVCacheWrapper:
             rope_scale = 1.0
         if rope_theta is None:
             rope_theta = 1e4
+        if mask is None:
+            mask = torch.empty((0, 0), dtype=torch.int8, device=q.device)
         if is_float8(q):
             logging.warning(
                 "Our current prefill kernel implementation needs f16 input, the f8 inputs "
@@ -589,6 +610,7 @@ class BatchPrefillWithPagedKVCacheWrapper:
             rope_scale,
             rope_theta,
             True,
+            mask,
         )
 
 
@@ -745,6 +767,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         sm_scale: Optional[float] = None,
         rope_scale: Optional[float] = None,
         rope_theta: Optional[float] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
         r"""Compute batch prefill/append attention between query and kv-cache stored in
         ragged tensor.
@@ -773,6 +796,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             ``1.0``.
         rope_theta : Optional[float]
             The theta used in RoPE, if not provided, will be set to ``1e4``.
+        mask : Optional[torch.Tensor]
+            The mask tensor for last k query tokens, shape: ``[k, k]``, dtype is ``torch.int8``.
 
         Returns
         -------
@@ -786,6 +811,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             rope_scale = 1.0
         if rope_theta is None:
             rope_theta = 1e4
+        if mask is None:
+            mask = torch.tensor([], dtype=torch.int8, device=q.device)
         if is_float8(q):
             logging.warning(
                 "Our current prefill kernel implementation needs f16 input, the f8 inputs "
@@ -807,6 +834,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             rope_scale,
             rope_theta,
             False,
+            mask,
         )[0]
 
     def forward_return_lse(
@@ -820,6 +848,7 @@ class BatchPrefillWithRaggedKVCacheWrapper:
         sm_scale: Optional[float] = None,
         rope_scale: Optional[float] = None,
         rope_theta: Optional[float] = None,
+        mask: Optional[torch.Tensor] = None,
     ):
         r"""Compute batch prefill/append attention between query and kv-cache stored in
         ragged tensor. Return attention output and logsumexp of attention scores.
@@ -847,6 +876,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             The scale used in RoPE interpolation, if not provided, will be set to ``1.0``.
         rope_theta : Optional[float]
             The theta used in RoPE, if not provided, will be set to ``1e4``.
+        mask : Optional[torch.Tensor]
+            The mask tensor for last k query tokens, shape: ``[k, k]``, dtype is ``torch.int8``.
 
         Returns
         -------
@@ -863,6 +894,8 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             rope_scale = 1.0
         if rope_theta is None:
             rope_theta = 1e4
+        if mask is None:
+            mask = torch.empty((0, 0), dtype=torch.int8, device=q.device)
         if is_float8(q):
             logging.warning(
                 "Our current prefill kernel implementation needs f16 input, the f8 inputs "
@@ -884,4 +917,5 @@ class BatchPrefillWithRaggedKVCacheWrapper:
             rope_scale,
             rope_theta,
             True,
+            mask,
         )

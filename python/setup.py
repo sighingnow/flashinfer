@@ -388,6 +388,7 @@ if __name__ == "__main__":
             extra_compile_args={
                 "cxx": ["-O3"],
                 "nvcc": [
+                    "--disable-warnings",
                     "-O3",
                     "-std=c++17",
                     "--threads",
