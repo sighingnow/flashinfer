@@ -32,10 +32,12 @@ import generate_single_decode_inst, generate_single_prefill_inst, generate_batch
 
 root = pathlib.Path(__name__).parent
 
-enable_bf16 = True
+# Disable bf16 and fp8 to reduce size of target files to avoid link errors.
+
+enable_bf16 = False
 # NOTE(Zihao): we haven't utilized fp8 tensor cores yet, so there is no
 # cuda arch check for fp8 at the moment.
-enable_fp8 = True
+enable_fp8 = False
 for cuda_arch_flags in torch_cpp_ext._get_cuda_arch_flags():
     arch = int(re.search("compute_\d+", cuda_arch_flags).group()[-2:])
     if arch < 75:
@@ -395,6 +397,7 @@ if __name__ == "__main__":
                     "8",
                     "-Xfatbin",
                     "-compress-all",
+                    "-mcmodel=large",
                 ],
             },
         )
